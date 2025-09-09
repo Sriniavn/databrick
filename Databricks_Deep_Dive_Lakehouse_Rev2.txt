@@ -1,0 +1,182 @@
+--- Slide 1 ---
+Databricks: The Modern Data Lakehouse Platform - A Deep Dive for Database Professionals
+From ACID Transactions on Petabyte-scale Data to Unified AI & BI
+
+Presenter: Your Name, Title
+Logo: Your Company Logo / Databricks Logo
+
+--- Slide 2 ---
+Agenda
+The Data Landscape: Types, Repositories, and Evolution
+The Genesis of Databricks: Solving the Big Data Problem
+Core Architecture & Components: Workspace, Compute, Storage
+The Magic of Delta Lake: ACID Transactions on the Data Lake
+Unity Catalog: Unified Governance for Data and AI
+The Medallion Architecture: A Practical Blueprint for Data Quality
+Advanced Operations: Unstructured Data, OLTP, and AI/ML
+Live Demo & Code Walkthrough
+Q&A
+
+--- Slide 3 ---
+Data Spectrum: Structured / Semi-Structured / Unstructured (Analogy: Library)
+Structured: reference section (tables, CSV, Parquet, Avro).
+Semi-Structured: magazine section (JSON, XML) — flexible nested fields.
+Unstructured: art/photo books (images, videos, PDFs) — binary data; metadata required for search.
+
+--- Slide 4 ---
+Evolution of Data Platforms (Analogy: Housing & Storage)
+Database (OLTP): Delivery truck — ACID, fast transactions.
+Data Warehouse (OLAP): Specialized library — schema-on-write, BI.
+Data Lake: Raw land plot — stores all formats, cheap but needs governance.
+Data Lakehouse: Modern city — combines lake flexibility with warehouse governance.
+
+--- Slide 5 ---
+The Genesis: Hadoop → Spark → Databricks
+Hadoop: storage + MapReduce — solved scale but heavy for iterative workloads.
+Spark: in-memory distributed engine for SQL, streaming, ML.
+Databricks: SaaS platform by Spark creators — integrated UX, Delta Lake, MLflow, Unity Catalog.
+
+--- Slide 6 ---
+Deployments & Providers
+AWS, Azure, GCP (cloud SaaS).
+Databricks on Kubernetes (Private Preview) for private cloud options.
+Databricks does not 'store' data — uses your object storage (S3/ADLS/GCS).
+
+--- Slide 7 ---
+Compute & Serverless
+Cluster types: All-purpose vs Job clusters.
+Serverless: infra-managed; pros: quick start, autoscaling; cons: less control.
+Choose based on workload SLA and cost model.
+
+--- Slide 8 ---
+Workspace, Notebooks & Jobs (PySpark sample)
+df = spark.read.format("csv").option("header","true").load("/path/to/sample.csv")
+display(df)  # Databricks notebook helper
+
+--- Slide 9 ---
+ACID on Delta Lake — Key Concepts
+Transaction log (_delta_log): ordered JSON commits + periodic Parquet checkpoints.
+Atomic commits, snapshot isolation, schema enforcement/evolution.
+Time travel & Change Data Feed (CDF).
+
+--- Slide 10 ---
+Delta Log: Inspect commits and checkpoints (PySpark)
+# Inspect commit JSONs
+commits = spark.read.json("/mnt/lake/mytable/_delta_log/*.json")
+commits.select("commitInfo.*").show(truncate=False)
+
+# Use DeltaTable API for history
+from delta.tables import DeltaTable
+dt = DeltaTable.forPath(spark, "/mnt/lake/mytable")
+dt.history(20).show(truncate=False)
+
+--- Slide 11 ---
+Delta vs Iceberg (Guidance)
+Delta: Databricks-optimized features (MERGE, CDF, OPTIMIZE, Z-Order).
+Iceberg: Engine-agnostic; prefer for heterogeneous multi-engine setups.
+
+--- Slide 12 ---
+Medallion Architecture (Bronze→Silver→Gold)
+Bronze: raw ingest as-is (landing zone).
+Silver: cleansed and enriched (dedupe, sessionization).
+Gold: aggregates & feature tables for BI/ML.
+
+--- Slide 13 ---
+Bronze→Silver→Gold SQL Example
+-- Bronze
+CREATE TABLE bronze.clickstream USING DELTA LOCATION '/mnt/lake/bronze/clickstream';
+
+-- Silver (example)
+CREATE TABLE silver.sessions USING DELTA AS
+SELECT userId, sessionId, min(eventTime) as session_start
+FROM bronze.clickstream WHERE userId IS NOT NULL GROUP BY userId, sessionId;
+
+-- Gold (DAU)
+CREATE TABLE gold.dau USING DELTA AS
+SELECT date(session_start) as dt, COUNT(DISTINCT userId) as dau FROM silver.sessions GROUP BY date(session_start);
+
+--- Slide 14 ---
+Unstructured Data: How to manage images & videos
+Store binaries in object storage; maintain metadata (path, checksum, labels) in Delta.
+Use embeddings + vector search for semantic retrieval; file-level ops for binaries.
+
+--- Slide 15 ---
+Example: Create metadata table from images (PySpark)
+imgs = spark.read.format("binaryFile").load("/mnt/landing/images/")
+from pyspark.sql.functions import sha2, col
+meta = imgs.select(col("path"), sha2(col("content"),256).alias("sha256"))
+meta.write.format("delta").saveAsTable("demo.assets.images_meta")
+
+--- Slide 16 ---
+CRUD Internals: INSERT / UPDATE / DELETE / MERGE / TRUNCATE / DROP
+INSERT: append new Parquet files; commit entry references them.
+UPDATE/DELETE/MERGE: copy-on-write → new files for affected data; old files are marked removed.
+TRUNCATE: metadata updated to zero files; DROP: metadata removed; VACUUM physically deletes unreferenced files.
+
+--- Slide 17 ---
+Parquet File Creation & Minimization
+Parquet files are created by Spark write tasks; a transaction may produce many files.
+Minimize files: coalesce/repartition writes, use auto-optimization, OPTIMIZE/Z-ORDER for compaction.
+Aim file sizes ~128-512MB depending on workload.
+
+--- Slide 18 ---
+Compaction & OPTIMIZE (examples)
+-- Databricks SQL (OPTIMIZE)
+OPTIMIZE demo.retail.customers ZORDER BY (customer_id);
+
+-- PySpark manual rewrite
+df = spark.read.format("delta").load("/mnt/lake/demo/retail/customers")
+df.repartition(50).write.format("delta").mode("overwrite").save("/mnt/lake/demo/retail/customers")
+
+--- Slide 19 ---
+Indexing Concepts & Data Skipping
+Delta uses file-level statistics (min/max) for data skipping.
+Z-Ordering clusters data to improve pruning; external index engines (Hyperspace) exist for specialized cases.
+
+--- Slide 20 ---
+Performance Optimization Checklist
+Partition on low-cardinality filter columns; avoid high-cardinality partitions.
+Tune shuffle partitions and coalesce output files.
+Enable AQE and caching for hot datasets.
+Use Photon/SQL Warehouses for BI workloads.
+
+--- Slide 21 ---
+Time Travel & Restore (examples)
+-- SQL time travel
+SELECT * FROM demo.retail.customers VERSION AS OF 5;
+
+-- PySpark read by version and backup then restore
+spark.read.format("delta").option("versionAsOf", 5).load("/mnt/lake/demo/retail/customers")   .write.format("delta").mode("overwrite").saveAsTable("demo.retail.customers_restore_v5")
+
+--- Slide 22 ---
+VACUUM & Retention Best Practices
+VACUUM removes files older than retention. Keep retention >= recovery need.
+Do not run VACUUM lightly; coordinate with SRE/backup owners.
+
+--- Slide 23 ---
+Audit Trail & History (PySpark)
+from delta.tables import DeltaTable
+dt = DeltaTable.forName(spark, "demo.retail.customers")
+hist = dt.history(100)
+hist.select("version","timestamp","userId","operation","operationMetrics").show(truncate=False)
+
+# Build audit table from commitInfo
+commits = spark.read.json("/mnt/lake/demo/retail/customers/_delta_log/*.json")
+commits.select("commitInfo.*").write.format("delta").mode("overwrite").saveAsTable("audit.delta_commits")
+
+--- Slide 24 ---
+Logs in S3 & Security
+_delta_log is stored beside data — secure using IAM, encryption, least-privilege.
+Apply lifecycle policies and ensure backups for compliance.
+
+--- Slide 25 ---
+Advanced Topics: CDF, Vector Search, MLflow
+CDF for incremental change extraction; use for CDC or incremental ETL.
+Vector search for embeddings-based semantic queries over unstructured assets.
+MLflow for experiment tracking and model registry integrated in Databricks.
+
+--- Slide 26 ---
+Conclusion & Next Steps
+Databricks + Delta unlocks ACID, scale, and unified data+AI platform.
+Plan retention, compaction, partitioning, and governance to get best results.
+Live demo: ingestion → Delta write → MERGE → OPTIMIZE → time travel → audit.
